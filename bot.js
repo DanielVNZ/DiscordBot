@@ -20,9 +20,11 @@ async function getLatestThreadUrl() {
 
     try {
         console.log('Launching browser to check for updates...');
-        browser = await puppeteer.launch();
+        browser = await puppeteer.launch({
+            args: ['--no-sandbox', '--disable-setuid-sandbox'] // Add these arguments
+        });
         const page = await browser.newPage();
-
+        
         console.log('Navigating to the forum page...');
         await page.goto(FORUM_URL, { waitUntil: 'networkidle2', timeout: 60000 });
 
@@ -55,7 +57,9 @@ async function getLatestPatchNotesContent(url) {
 
     try {
         console.log('Launching browser to fetch patch notes...');
-        browser = await puppeteer.launch();
+        browser = await puppeteer.launch({
+            args: ['--no-sandbox', '--disable-setuid-sandbox'] // Add these arguments
+        });
         const page = await browser.newPage();
 
         console.log('Navigating to the latest patch notes page...');
