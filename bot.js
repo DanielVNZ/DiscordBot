@@ -83,19 +83,26 @@ async function getLatestPatchNotesContent(url) {
         let isTechnicalSection = false; // Flag to track if we're in the "Technical" section
         let stopProcessing = false; // Flag to stop processing after the "Technical" section
         let firstTitleAdded = false; // Flag to ensure the first title is only added once
+        let firstTitleText = ''; // Store the text of the first title to avoid duplicates
 
         contentMain.find('h1, h2, h3, p, ul, blockquote').each((_, element) => {
             if (stopProcessing) return; // Stop processing if the flag is set
 
             const tagName = $(element).prop('tagName').toLowerCase();
-            const text = $(element).text().trim();
+            let text = $(element).text().trim();
+
+            // Clean up the title text (remove "Patch Notespinned")
+            if (tagName === 'h1' || tagName === 'h2') {
+                text = text.replace(/Patch Notespinned/gi, '').trim();
+            }
 
             // Add the first title only once at the beginning
             if (!firstTitleAdded && (tagName === 'h1' || tagName === 'h2')) {
                 formattedContent += `### **${text}**\n\n`;
                 firstTitleAdded = true; // Mark the first title as added
-            } else if ((tagName === 'h1' || tagName === 'h2')) {
-                // Add other titles normally
+                firstTitleText = text; // Store the text of the first title
+            } else if ((tagName === 'h1' || tagName === 'h2') && text !== firstTitleText) {
+                // Add other titles only if they are not the same as the first title
                 formattedContent += `### **${text}**\n\n`;
             }
 
@@ -153,15 +160,17 @@ async function checkForUpdates() {
             const { url, content } = patchNotesData;
 
             const channel = await client.channels.fetch(process.env.CHANNEL_ID);
-            await channel.send(`**New Star Citizen Patch Notes:**\n${url}`);
 
-            if (content.length > 2000) {
-                const parts = content.match(/[\s\S]{1,2000}/g);
-                for (const part of parts) {
-                    await channel.send(part);
-                }
-            } else {
-                await channel.send(content);
+            // Ping the "patch updates" role
+            const roleMention = `<@&${process.env.PATCH_UPDATES_ROLE_ID}>`;
+            await channel.send(`${roleMention} **New Star Citizen Patch Notes:**\n${url}`);
+
+            // Split content into chunks of 2000 characters or fewer
+            const parts = content.match(/[\s\S]{1,2000}/g) || [];
+
+            // Send each part as a standalone message
+            for (const part of parts) {
+                await channel.send(part); // Each message is independent
             }
 
             console.log('Patch notes posted in the specified channel.');
@@ -186,22 +195,25 @@ client.on('interactionCreate', async (interaction) => {
         if (patchNotesData) {
             const { url, content } = patchNotesData;
 
-            await interaction.editReply(`**Latest Star Citizen Patch Notes:**\n${url}`);
+            // Ping the "patch updates" role
+            const roleMention = `<@&${process.env.PATCH_UPDATES_ROLE_ID}>`;
+            await interaction.editReply(`${roleMention} **Latest Star Citizen Patch Notes:**\n${url}`);
 
-            if (content.length > 2000) {
-                const parts = content.match(/[\s\S]{1,2000}/g);
-                for (const part of parts) {
-                    await interaction.followUp(part);
-                }
-            } else {
-                await interaction.followUp(content);
+            // Split content into chunks of 2000 characters or fewer
+            const parts = content.match(/[\s\S]{1,2000}/g) || [];
+
+            // Fetch the channel where the command was used
+            const channel = interaction.channel;
+
+            // Send each part as a standalone message in the channel
+            for (const part of parts) {
+                await channel.send(part); // Each message is independent
             }
         } else {
             await interaction.editReply('Could not fetch the latest patch notes. Please try again later.');
         }
     }
 });
-
 // Login to Discord
 client.login(process.env.TOKEN);
 
