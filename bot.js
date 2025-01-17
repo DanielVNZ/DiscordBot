@@ -2,11 +2,17 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, REST, Routes } = require('discord.js');
 const puppeteer = require('puppeteer');
-const fs = require('fs');
 const cheerio = require('cheerio');
+
 
 // Discord bot setup
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
+// OpenAI setup
+const OpenAI = require('openai');
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
 
 // Forum URL to monitor
 const FORUM_URL = 'https://robertsspaceindustries.com/spectrum/community/SC/forum/190048';
@@ -50,6 +56,26 @@ async function getLatestThreadUrl() {
     }
 }
 
+// Function to process patch notes with ChatGPT
+async function processPatchNotesWithChatGPT(content) {
+    try {
+        const prompt = `You are a helpful assistant that formats patch notes for Star Citizen. dont include a release date/time! besides this YOU MUST INCLUDE EVERYTHING FROM THE TITLE AT THE TOP TO THE END OF THE TECHNICAL CATEGORY! Make sure to show any special requests or any testing/feedback focus Include all Known issues. Features & Gameplay, Bug Fixes and Technical. Use markdown for formatting:\n\n${content}`;
+
+        const response = await openai.chat.completions.create({
+            model: 'gpt-4o-mini', 
+            messages: [
+                { role: 'system', content: 'You are a helpful assistant that formats patch notes for Star Citizen.' },
+                { role: 'user', content: prompt },
+            ],
+            max_tokens: 3500, // Adjust as needed
+        });
+
+        return response.choices[0].message.content.trim();
+    } catch (error) {
+        console.error('Error processing patch notes with ChatGPT:', error);
+        return null;
+    }
+}
 // Function to fetch and format patch notes
 async function getLatestPatchNotesContent(url) {
     let browser;
@@ -78,63 +104,17 @@ async function getLatestPatchNotesContent(url) {
             return null;
         }
 
-        // Traverse and format the content
-        let formattedContent = '';
-        let isTechnicalSection = false; // Flag to track if we're in the "Technical" section
-        let stopProcessing = false; // Flag to stop processing after the "Technical" section
-        let firstTitleAdded = false; // Flag to ensure the first title is only added once
-        let firstTitleText = ''; // Store the text of the first title to avoid duplicates
+        // Extract raw content
+        const rawContent = contentMain.text().trim();
 
-        contentMain.find('h1, h2, h3, p, ul, blockquote').each((_, element) => {
-            if (stopProcessing) return; // Stop processing if the flag is set
+        // Process the raw content with ChatGPT
+        const formattedContent = await processPatchNotesWithChatGPT(rawContent);
+        if (!formattedContent) {
+            console.error('ChatGPT failed to process the patch notes.');
+            return null;
+        }
 
-            const tagName = $(element).prop('tagName').toLowerCase();
-            let text = $(element).text().trim();
-
-            // Clean up the title text (remove "Patch Notespinned")
-            if (tagName === 'h1' || tagName === 'h2') {
-                text = text.replace(/Patch Notespinned/gi, '').trim();
-            }
-
-            // Add the first title only once at the beginning
-            if (!firstTitleAdded && (tagName === 'h1' || tagName === 'h2')) {
-                formattedContent += `### **${text}**\n\n`;
-                firstTitleAdded = true; // Mark the first title as added
-                firstTitleText = text; // Store the text of the first title
-            } else if ((tagName === 'h1' || tagName === 'h2') && text !== firstTitleText) {
-                // Add other titles only if they are not the same as the first title
-                formattedContent += `### **${text}**\n\n`;
-            }
-
-            // Check if we've entered the "Technical" section
-            if ((tagName === 'h1' || tagName === 'h2') && text.toLowerCase().includes('technical')) {
-                isTechnicalSection = true; // We're now in the "Technical" section
-            }
-
-            // Process all content above and including the "Technical" section
-            if (!stopProcessing) {
-                if (tagName === 'ul') {
-                    $(element)
-                        .find('li')
-                        .each((_, li) => {
-                            formattedContent += `- ${$(li).text().trim()}\n`; // Add list items
-                        });
-                    formattedContent += '\n';
-                } else if (tagName === 'p' || tagName === 'blockquote') {
-                    formattedContent += `${text}\n\n`; // Add paragraphs or blockquotes
-                }
-
-                // Check if we've reached the end of the "Technical" section
-                if (isTechnicalSection) {
-                    const nextElement = $(element).next();
-                    if (nextElement.length === 0 || nextElement.is('h1, h2')) {
-                        stopProcessing = true; // Stop processing after this section
-                    }
-                }
-            }
-        });
-
-        return { url, content: formattedContent.trim() };
+        return { url, content: formattedContent };
     } catch (error) {
         console.error('Error fetching patch notes content:', error);
         return null;
@@ -214,6 +194,7 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 });
+
 // Login to Discord
 client.login(process.env.TOKEN);
 
