@@ -202,14 +202,20 @@ let isFirstMessage = true; // Track whether this is the first message
 
 for (const part of parts) {
     if (isFirstMessage) {
-        // Include the ping only in the first message
-        await channel.send(`${roleMention} **New Star Citizen Patch Notes:**\n${part}`);
+        // Send the first message with the ping
+        await channel.send({
+            content: `${roleMention} **New Star Citizen Patch Notes:**\n${part}`
+        });
         isFirstMessage = false; // Mark subsequent messages as non-first
     } else {
-        // Send subsequent messages without the ping
-        await channel.send(part);
+        // Send subsequent messages with suppressed notifications
+        await channel.send({
+            content: part,
+            flags: MessageFlags.SuppressNotifications
+        });
     }
 }
+
 
                         console.log(`Patch notes posted in server ${guildId}`);
                     }
