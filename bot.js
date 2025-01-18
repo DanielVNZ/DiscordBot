@@ -13,7 +13,7 @@ const OpenAI = require('openai');
 let openai = null;
 
 // Persistent configuration file
-const CONFIG_FILE = 'config.json';
+const CONFIG_FILE = '/app/data/config.json';
 let serverConfigs = {};
 
 // Load configuration from file
