@@ -1,6 +1,6 @@
 // Load environment variables from local.env file
 require('dotenv').config();
-const { Client, GatewayIntentBits, REST, Routes, MessageFlags } = require('discord.js');
+const { Client, GatewayIntentBits, REST, Routes, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const fs = require('fs');
 const puppeteer = require('puppeteer');
 const cheerio = require('cheerio');
@@ -13,7 +13,8 @@ const OpenAI = require('openai');
 let openai = null;
 
 // Persistent configuration file
-const CONFIG_FILE = '/app/data/config.json';
+const CONFIG_FILE = '/app/data/config.json'; // production
+//const CONFIG_FILE = 'config.json'; // Testing
 let serverConfigs = {};
 
 // Load configuration from file
@@ -195,7 +196,7 @@ async function checkForUpdates() {
                     const channel = await client.channels.fetch(config.channelId).catch(() => null);
                     if (channel) {
                         const roleMention = config.pingRoleId ? `<@&${config.pingRoleId}>` : '';
-                        await channel.send(`${roleMention} **New Star Citizen Patch Notes:**\n${url}`);
+                        await channel.send(`${roleMention} **New Patch Has Just Dropped! **\n${url}`);
 
                         const parts = content.match(/.{1,2000}/gs) || [];
 let isFirstMessage = true; // Track whether this is the first message
@@ -204,7 +205,7 @@ for (const part of parts) {
     if (isFirstMessage) {
         // Send the first message with the ping
         await channel.send({
-            content: `${roleMention} **New Star Citizen Patch Notes:**\n${part}`
+            content: `${roleMention} **New Patch Has Just Dropped! **\n${part}`
         });
         isFirstMessage = false; // Mark subsequent messages as non-first
     } else {
@@ -229,107 +230,165 @@ for (const part of parts) {
 
 // Command handling
 client.on('interactionCreate', async (interaction) => {
-    if (!interaction.isCommand()) return;
+    if (!interaction.isCommand() && !interaction.isButton()) return;
 
-    if (interaction.commandName === 'setup') {
-        try {
-            await interaction.deferReply({ ephemeral: true });
-
-            const channel = interaction.options.getChannel('channel');
-            const pingRole = interaction.options.getRole('pingrole');
-            const openAiKey = interaction.options.getString('openai_key');
-
-            if (!openAiKey) {
-                await interaction.editReply('An OpenAI API key is required to set up the bot. Please provide one.');
-                console.error('OpenAi API key not provided during setup.');
-                return;
-            }
-
-            // Save server-specific configuration
-            serverConfigs[interaction.guildId] = {
-                channelId: channel.id,
-                pingRoleId: pingRole ? pingRole.id : null,
-                openAiKey: openAiKey
-            };
-            
-            saveConfig();
-
-            // Initialize OpenAI if not already initialized
-            if (!openai) {
-                openai = new OpenAI({ apiKey: openAiKey });
-            }
-
-            await interaction.editReply({
-                content: `Patch notes will now be posted in <#${channel.id}>${
-                    pingRole ? ` and will ping <@&${pingRole.id}>` : ''
-                }.`
-            });
-
-            console.log(
-                `Setup complete: Channel ID = ${channel.id}, Ping Role ID = ${
-                    pingRole ? pingRole.id : 'None'
-                }, OpenAI Key Provided: ${!!openAiKey}`
-            );
-        } catch (error) {
-            console.error('Error handling /setup command:', error.message);
-
-            // Attempt to reply with an error message if the interaction isn't replied to
+    if (interaction.isCommand()) {
+        if (interaction.commandName === 'setup') {
             try {
-                await interaction.editReply('An error occurred while processing your request.');
-            } catch (replyError) {
-                console.error('Failed to edit reply:', replyError.message);
-            }
-        }
-    } else if (interaction.commandName === 'patchnotes') {
-        const serverConfig = serverConfigs[interaction.guildId];
-        console.log('Server configuration for patchnotes command:', serverConfig); // Debugging statement
-        if (!serverConfig) {
-            await interaction.reply({
-                content: 'This server is not configured. Please run `/setup` first.',
-                ephemeral: true
-            });
-            return;
-        }
+                await interaction.deferReply({ ephemeral: true });
 
-        try {
-            await interaction.deferReply();
+                const channel = interaction.options.getChannel('channel');
+                const pingRole = interaction.options.getRole('pingrole');
+                const openAiKey = interaction.options.getString('openai_key');
 
-            const patchNotesData = await getLatestPatchNotesContent(latestThreadUrl);
-            if (patchNotesData) {
-                const { url, content } = patchNotesData;
-
-                const channel = await client.channels.fetch(serverConfig.channelId).catch((err) => {
-                    console.error('Error fetching channel:', err.message);
-                    return null;
-                });
-
-                if (!channel) {
-                    console.error('Command invoked in an invalid or undefined channel.');
-                    await interaction.editReply('An error occurred: the channel could not be determined.');
+                if (!openAiKey) {
+                    await interaction.editReply('An OpenAI API key is required to set up the bot. Please provide one. You can get an API key from https://platform.openai.com/account/api-keys', { ephemeral: true });
+                    console.error('OpenAi API key not provided during setup.');
                     return;
                 }
 
-                const roleMention = serverConfig.pingRoleId ? `<@&${serverConfig.pingRoleId}>` : '';
-                await channel.send(`${roleMention} **Latest Star Citizen Patch Notes:**
-${url}`);
+                // Save server-specific configuration
+                serverConfigs[interaction.guildId] = {
+                    channelId: channel.id,
+                    pingRoleId: pingRole ? pingRole.id : null,
+                    openAiKey: openAiKey
+                };
+                
+                saveConfig();
 
-                const parts = content.match(/.{1,2000}/gs) || [];
-                for (const part of parts) {
-                    await channel.send(part);
+                // Initialize OpenAI if not already initialized
+                if (!openai) {
+                    openai = new OpenAI({ apiKey: openAiKey });
                 }
 
-                await interaction.editReply('Patch notes have been posted.');
+                await interaction.editReply({
+                    content: `Patch notes will now be posted in <#${channel.id}>${
+                        pingRole ? ` and will ping <@&${pingRole.id}>` : ''
+                    }.`
+                });
 
-            } else {
-                await interaction.editReply('Could not fetch the latest patch notes. Please try again later.');
+                console.log(
+                    `Setup complete: Channel ID = ${channel.id}, Ping Role ID = ${
+                        pingRole ? pingRole.id : 'None'
+                    }, OpenAI Key Provided: ${!!openAiKey}`
+                );
+            } catch (error) {
+                console.error('Error handling /setup command:', error.message);
+
+                // Attempt to reply with an error message if the interaction isn't replied to
+                try {
+                    await interaction.editReply('An error occurred while processing your request.');
+                } catch (replyError) {
+                    console.error('Failed to edit reply:', replyError.message);
+                }
             }
-        } catch (error) {
-            console.error('Error handling /patchnotes command:', error.message);
+        } else if (interaction.commandName === 'patchnotes') {
+            const serverConfig = serverConfigs[interaction.guildId];
+            console.log('Server configuration for patchnotes command:', serverConfig); // Debugging statement
+            if (!serverConfig) {
+                await interaction.reply({
+                    content: 'This server is not configured. Please run `/setup` first.',
+                    ephemeral: true
+                });
+                return;
+            }
+
             try {
-                await interaction.editReply('An unexpected error occurred while processing your request.');
-            } catch (replyError) {
-                console.error('Failed to edit reply:', replyError.message);
+                await interaction.deferReply();
+
+                const patchNotesData = await getLatestPatchNotesContent(latestThreadUrl);
+                if (patchNotesData) {
+                    const { url, content } = patchNotesData;
+
+                    const channel = await client.channels.fetch(serverConfig.channelId).catch((err) => {
+                        console.error('Error fetching channel:', err.message);
+                        return null;
+                    });
+
+                    if (!channel) {
+                        console.error('Command invoked in an invalid or undefined channel.');
+                        await interaction.editReply('An error occurred: the channel could not be determined.');
+                        return;
+                    }
+
+                    const roleMention = serverConfig.pingRoleId ? `<@&${serverConfig.pingRoleId}>` : '';
+                    await channel.send(`${roleMention} **Latest Star Citizen Patch Notes:**
+${url}`);
+
+                    const parts = content.match(/.{1,2000}/gs) || [];
+                    for (const part of parts) {
+                        await channel.send(part);
+                    }
+
+                    await interaction.editReply('Patch notes have been posted.');
+
+                } else {
+                    await interaction.editReply('Could not fetch the latest patch notes. Please try again later.');
+                }
+            } catch (error) {
+                console.error('Error handling /patchnotes command:', error.message);
+                try {
+                    await interaction.editReply('An unexpected error occurred while processing your request.');
+                } catch (replyError) {
+                    console.error('Failed to edit reply:', replyError.message);
+                }
             }
+        } else if (interaction.commandName === 'reset') {
+            try {
+                await interaction.deferReply({ ephemeral: true });
+
+                // Reset server-specific configuration
+                resetServerConfig(interaction.guildId);
+
+                await interaction.editReply('Setup has been deleted. You will need to run `/setup` to use the bot again.');
+                console.log(`Setup reset for server ${interaction.guildId}`);
+            } catch (error) {
+                console.error('Error handling /reset command:', error.message);
+                try {
+                    await interaction.editReply('An error occurred while processing your request.');
+                } catch (replyError) {
+                    console.error('Failed to edit reply:', replyError.message);
+                }
+            }
+        } else if (interaction.commandName === 'help') {
+            try {
+                const row = new ActionRowBuilder()
+                    .addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('setup')
+                            .setLabel('Setup')
+                            .setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder()
+                            .setCustomId('patchnotes')
+                            .setLabel('Patch Notes')
+                            .setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder()
+                            .setCustomId('reset')
+                            .setLabel('Reset')
+                            .setStyle(ButtonStyle.Danger)
+                    );
+
+                await interaction.reply({
+                    content: ``,
+                    components: [row],
+                    ephemeral: true
+                });
+            } catch (error) {
+                console.error('Error handling /help command:', error.message);
+                try {
+                    await interaction.reply('An error occurred while processing your request.');
+                } catch (replyError) {
+                    console.error('Failed to reply:', replyError.message);
+                }
+            }
+        }
+    } else if (interaction.isButton()) {
+        if (interaction.customId === 'setup') {
+            await interaction.reply('Please use the `/setup` command to set up the bot. Requires OpenAI API Key - https://platform.openai.com/account/api-keys', { ephemeral: true });
+        } else if (interaction.customId === 'patchnotes') {
+            await interaction.reply('Please use the `/patchnotes` command to fetch the latest patch notes. /setup must be run once first');
+        } else if (interaction.customId === 'reset') {
+            await interaction.reply('Please use the `/reset` command to reset the bot setup.');
         }
     }
 });
@@ -345,7 +404,7 @@ const commands = [
     },
     {
         name: 'setup',
-        description: 'Set up the bot to post patch notes and configure OpenAI',
+        description: 'Set up the bot to post patch notes and configure OpenAI and add an optional role to ping',
         options: [
             {
                 name: 'channel',
@@ -356,7 +415,7 @@ const commands = [
             {
                 name: 'openai_key',
                 type: 3, // String type
-                description: 'Your OpenAI API key (required)',
+                description: 'Your OpenAI API key (required) - https://platform.openai.com/account/api-keys',
                 required: true,
             },
             {
@@ -366,6 +425,14 @@ const commands = [
                 required: false,
             },
         ],
+    },
+    {
+        name: 'reset',
+        description: 'Reset the bot setup and delete the current configuration',
+    },
+    {
+        name: 'help',
+        description: 'Display help information about the bot commands',
     },
 ];
 
