@@ -1,13 +1,20 @@
 # Star Citizen Patch Notes Discord Bot
 
-A Discord bot that automatically fetches and posts the latest Star Citizen patch notes from the official Spectrum forum. It can also be manually triggered using the `/patchnotes` command. The bot uses Puppeteer for web scraping and ChatGPT (via OpenAI API) to format the patch notes for better readability.
+A Discord bot that automatically fetches and posts the latest Star Citizen patch notes from the official Spectrum forum. It can also be manually triggered using the `/patchnotes` command. The bot supports multiple servers, with each server storing its own configuration for channels, roles, and OpenAI API keys. The bot uses Puppeteer for web scraping and ChatGPT (via OpenAI API) to format the patch notes for better readability.
 
 ## Features
 
+- **Multi-Server Support**: Each server can configure its own settings, including channel, role, and OpenAI API key.
 - **Automatic Updates**: Fetches and posts new patch notes as soon as they are published.
 - **Manual Trigger**: Use the `/patchnotes` command to fetch and post the latest patch notes at any time.
 - **ChatGPT Integration**: Formats patch notes for clarity and readability.
 - **Role Mention**: Pings a specific role (e.g., `@Patch Updates`) when new patch notes are posted.
+- **Persistent Configuration**: Server configurations persist across bot restarts.
+
+# Simple Install
+Just use the app! https://discord.com/discovery/applications/1329307874169585725 
+
+# Custom Install
 
 ## Prerequisites
 
@@ -40,9 +47,6 @@ Create a `.env` file in the root directory of the project and add the following 
 ```env
 TOKEN=your_discord_bot_token
 CLIENT_ID=your_discord_bot_client_id
-CHANNEL_ID=your_discord_channel_id
-PATCH_UPDATES_ROLE_ID=your_patch_updates_role_id
-OPENAI_API_KEY=your_openai_api_key
 ```
 
 Replace the placeholders with your actual credentials.
@@ -61,9 +65,23 @@ https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=214748
 npm start
 ```
 
-The bot will start monitoring the Star Citizen Spectrum forum for new patch notes and post them in the specified channel.
+The bot will start monitoring the Star Citizen Spectrum forum for new patch notes. Configuration for each server must be done using the `/setup` command.
 
 ## Usage
+
+### Setup (`/setup`)
+
+Use the `/setup` command to configure the bot for your server. You'll need to provide:
+
+1. The channel where patch notes should be posted.
+2. Your OpenAI API key.
+3. (Optional) The role to mention when new patch notes are posted.
+
+Example command:
+
+```plaintext
+/setup channel:#patch-notes openai_key:sk-abcdef123456 pingrole:@PatchUpdates
+```
 
 ### Automatic Updates
 
@@ -72,31 +90,28 @@ The bot checks for new patch notes every 60 seconds. If a new thread is detected
 1. Fetch the patch notes.
 2. Format them using ChatGPT.
 3. Post them in the specified Discord channel.
-4. Mention the `@Patch Updates` role (if configured).
+4. Mention the configured role (if applicable).
 
-### Manual Trigger
+### Manual Trigger (`/patchnotes`)
 
 Use the `/patchnotes` command in your Discord server to manually fetch and post the latest patch notes.
 
+### Reset Configuration (`/reset`)
+
+Use the `/reset` command to clear the bot's configuration for your server. After running this command, you'll need to reconfigure the bot using `/setup`.
+
 ## Configuration
+
+### Persistent Configuration
+
+Server-specific settings, such as channels, roles, and OpenAI API keys, are stored in a `config.json` file. This ensures configurations persist across bot restarts.
 
 ### Environment Variables
 
-| Variable                | Description                                                     |
-|-------------------------|-----------------------------------------------------------------|
-| `TOKEN`                | Your Discord bot token.                                        |
-| `CLIENT_ID`            | Your Discord bot client ID.                                    |
-| `CHANNEL_ID`           | The ID of the Discord channel where patch notes will be posted.|
-| `PATCH_UPDATES_ROLE_ID`| The ID of the role to mention when new patch notes are posted.  |
-| `OPENAI_API_KEY`       | Your OpenAI API key for ChatGPT integration.                   |
-
-### Customizing the Forum URL
-
-If you want to monitor a different forum, update the `FORUM_URL` variable in `bot.js`:
-
-```javascript
-const FORUM_URL = 'https://robertsspaceindustries.com/spectrum/community/SC/forum/190048';
-```
+| Variable   | Description                           |
+|------------|---------------------------------------|
+| `TOKEN`    | Your Discord bot token.              |
+| `CLIENT_ID`| Your Discord bot client ID.          |
 
 ## Technologies Used
 
@@ -122,3 +137,4 @@ This project is licensed under the MIT License. See the `LICENSE` file for detai
 If you encounter any issues or have questions, feel free to open an issue on GitHub or contact me directly.
 
 Enjoy your Star Citizen Patch Notes Discord Bot! 🚀
+
