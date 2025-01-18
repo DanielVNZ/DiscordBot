@@ -198,9 +198,19 @@ async function checkForUpdates() {
                         await channel.send(`${roleMention} **New Star Citizen Patch Notes:**\n${url}`);
 
                         const parts = content.match(/.{1,2000}/gs) || [];
-                        for (const part of parts) {
-                            await channel.send(part);
-                        }
+let isFirstMessage = true; // Track whether this is the first message
+
+for (const part of parts) {
+    if (isFirstMessage) {
+        // Include the ping only in the first message
+        await channel.send(`${roleMention} **New Star Citizen Patch Notes:**\n${part}`);
+        isFirstMessage = false; // Mark subsequent messages as non-first
+    } else {
+        // Send subsequent messages without the ping
+        await channel.send(part);
+    }
+}
+
                         console.log(`Patch notes posted in server ${guildId}`);
                     }
                 } catch (error) {
