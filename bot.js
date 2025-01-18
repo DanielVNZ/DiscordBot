@@ -363,6 +363,10 @@ ${url}`);
                             .setLabel('Patch Notes')
                             .setStyle(ButtonStyle.Primary),
                         new ButtonBuilder()
+                            .setCustomId('check')
+                            .setLabel('Check Status')
+                            .setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder()
                             .setCustomId('reset')
                             .setLabel('Reset')
                             .setStyle(ButtonStyle.Danger)
@@ -381,6 +385,39 @@ ${url}`);
                     console.error('Failed to reply:', replyError.message);
                 }
             }
+        } else if (interaction.commandName === 'check') {
+            try {
+                const serverConfig = serverConfigs[interaction.guildId];
+                if (!serverConfig) {
+                    await interaction.reply({
+                        content: 'This server is not configured. Please run `/setup` first.',
+                        ephemeral: true
+                    });
+                    return;
+                }
+
+                const channel = await client.channels.fetch(serverConfig.channelId).catch(() => null);
+                const channelName = channel ? `#${channel.name}` : 'Unknown';
+                const openAiKeyStatus = serverConfig.openAiKey ? 'True' : 'False';
+                const pingRole = serverConfig.pingRoleId ? `<@&${serverConfig.pingRoleId}>` : 'None';
+
+                await interaction.reply({
+                    content: `
+                    **Server Configuration:**
+                    • **Channel:** ${channelName}
+                    • **OpenAI Key Saved:** ${openAiKeyStatus}
+                    • **Ping Role:** ${pingRole}
+                    `,
+                    ephemeral: true
+                });
+            } catch (error) {
+                console.error('Error handling /check command:', error.message);
+                try {
+                    await interaction.reply('An error occurred while processing your request.');
+                } catch (replyError) {
+                    console.error('Failed to reply:', replyError.message);
+                }
+            }
         }
     } else if (interaction.isButton()) {
         if (interaction.customId === 'setup') {
@@ -389,6 +426,8 @@ ${url}`);
             await interaction.reply('Please use the `/patchnotes` command to fetch the latest patch notes. /setup must be run once first');
         } else if (interaction.customId === 'reset') {
             await interaction.reply('Please use the `/reset` command to reset the bot setup.');
+        } else if (interaction.customId === 'check') {
+            await interaction.reply('Please use the `/check` command to check the bot setup status.');
         }
     }
 });
@@ -433,6 +472,10 @@ const commands = [
     {
         name: 'help',
         description: 'Display help information about the bot commands',
+    },
+    {
+        name: 'check',
+        description: 'Check if the server is already set up and provide configuration details',
     },
 ];
 
