@@ -1,9 +1,8 @@
 // Load environment variables from local.env file
 require('dotenv').config();
-const { Client, GatewayIntentBits, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, REST, Routes, MessageFlags } = require('discord.js');
 const puppeteer = require('puppeteer');
 const cheerio = require('cheerio');
-
 
 // Discord bot setup
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -59,15 +58,15 @@ async function getLatestThreadUrl() {
 // Function to process patch notes with ChatGPT
 async function processPatchNotesWithChatGPT(content) {
     try {
-        const prompt = `You are a helpful assistant that formats patch notes for Star Citizen. dont include a release date/time! besides this YOU MUST INCLUDE EVERYTHING FROM THE TITLE AT THE TOP TO THE END OF THE TECHNICAL CATEGORY! Make sure to show any special requests or any testing/feedback focus Include all Known issues. Features & Gameplay, Bug Fixes and Technical. Use markdown for formatting:\n\n${content}`;
+        const prompt = `You are a helpful assistant that formats patch notes for Star Citizen. Don't include a release date/time! Besides this, YOU MUST INCLUDE EVERYTHING FROM THE TITLE AT THE TOP TO THE END OF THE TECHNICAL CATEGORY! Make sure to show any special requests or any testing/feedback focus. Include all Known issues, Features & Gameplay, Bug Fixes, and Technical. Use markdown for formatting:\n\n${content}`;
 
         const response = await openai.chat.completions.create({
-            model: 'gpt-4o-mini', 
+            model: 'gpt-4',
             messages: [
                 { role: 'system', content: 'You are a helpful assistant that formats patch notes for Star Citizen.' },
                 { role: 'user', content: prompt },
             ],
-            max_tokens: 3500, // Adjust as needed
+            max_tokens: 3500,
         });
 
         return response.choices[0].message.content.trim();
@@ -76,6 +75,7 @@ async function processPatchNotesWithChatGPT(content) {
         return null;
     }
 }
+
 // Function to fetch and format patch notes
 async function getLatestPatchNotesContent(url) {
     let browser;
@@ -97,17 +97,18 @@ async function getLatestPatchNotesContent(url) {
         const html = await page.content();
         const $ = cheerio.load(html);
 
-        // Select the main patch notes container
         const contentMain = $('div.content-main');
         if (!contentMain.length) {
             console.error('No content found in the main container.');
             return null;
         }
 
-        // Extract raw content
         const rawContent = contentMain.text().trim();
+        if (!rawContent) {
+            console.error('No content extracted from the patch notes page.');
+            return null;
+        }
 
-        // Process the raw content with ChatGPT
         const formattedContent = await processPatchNotesWithChatGPT(rawContent);
         if (!formattedContent) {
             console.error('ChatGPT failed to process the patch notes.');
@@ -133,24 +134,33 @@ async function checkForUpdates() {
 
     if (latestUrl && latestUrl !== latestThreadUrl) {
         console.log('New thread detected! Fetching patch notes...');
-        latestThreadUrl = latestUrl; // Update the latest thread URL
+        latestThreadUrl = latestUrl;
 
         const patchNotesData = await getLatestPatchNotesContent(latestUrl);
         if (patchNotesData) {
             const { url, content } = patchNotesData;
 
-            const channel = await client.channels.fetch(process.env.CHANNEL_ID);
+            if (!content) {
+                console.error('Patch notes content is empty or null. Skipping posting.');
+                return;
+            }
 
-            // Ping the "patch updates" role
-            const roleMention = `<@&${process.env.PATCH_UPDATES_ROLE_ID}>`;
+            const channel = await client.channels.fetch(interaction.channelId).catch((err) => {
+                console.error('Error fetching channel:', err.message);
+                return null;
+            });
+            if (!channel) {
+                console.error('Command invoked in an invalid or undefined channel.');
+                await interaction.editReply('An error occurred: the channel could not be determined.');
+                return;
+            }            
+
+            const roleMention = process.env.PATCH_UPDATES_ROLE_ID ? `<@&${process.env.PATCH_UPDATES_ROLE_ID}>` : '';
             await channel.send(`${roleMention} **New Star Citizen Patch Notes:**\n${url}`);
 
-            // Split content into chunks of 2000 characters or fewer
-            const parts = content.match(/[\s\S]{1,2000}/g) || [];
-
-            // Send each part as a standalone message
+            const parts = content.match(/.{1,2000}/gs) || [];
             for (const part of parts) {
-                await channel.send(part); // Each message is independent
+                await channel.send(part);
             }
 
             console.log('Patch notes posted in the specified channel.');
@@ -162,38 +172,56 @@ async function checkForUpdates() {
     }
 }
 
+
 // Command handling
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isCommand()) return;
 
-    if (interaction.commandName === 'patchnotes') {
-        await interaction.deferReply();
+    if (interaction.commandName === 'setup') {
+        try {
+            // Defer the reply as we're performing some asynchronous actions
+            await interaction.deferReply({ ephemeral: true });
 
-        console.log('Fetching latest patch notes...');
-        const patchNotesData = await getLatestPatchNotesContent(latestThreadUrl);
+            const channel = interaction.options.getChannel('channel');
+            const pingRole = interaction.options.getRole('pingrole');
 
-        if (patchNotesData) {
-            const { url, content } = patchNotesData;
-
-            // Ping the "patch updates" role
-            const roleMention = `<@&${process.env.PATCH_UPDATES_ROLE_ID}>`;
-            await interaction.editReply(`${roleMention} **Latest Star Citizen Patch Notes:**\n${url}`);
-
-            // Split content into chunks of 2000 characters or fewer
-            const parts = content.match(/[\s\S]{1,2000}/g) || [];
-
-            // Fetch the channel where the command was used
-            const channel = interaction.channel;
-
-            // Send each part as a standalone message in the channel
-            for (const part of parts) {
-                await channel.send(part); // Each message is independent
+            // Save the channel ID and role ID (e.g., to your database or environment variables)
+            process.env.CHANNEL_ID = channel.id;
+            if (pingRole) {
+                process.env.PATCH_UPDATES_ROLE_ID = pingRole.id;
             }
-        } else {
-            await interaction.editReply('Could not fetch the latest patch notes. Please try again later.');
+
+            // Respond to the user
+            await interaction.editReply({
+                content: `Patch notes will now be posted in <#${channel.id}>${
+                    pingRole ? ` and will ping <@&${pingRole.id}>` : ''
+                }.`,
+            });
+
+            console.log(
+                `Setup complete: Channel ID = ${channel.id}, Ping Role ID = ${
+                    pingRole ? pingRole.id : 'None'
+                }`
+            );
+        } catch (error) {
+            console.error('Error handling /setup command:', error.message);
+
+            // Attempt to reply with an error message if the interaction isn't replied to
+            try {
+                await interaction.editReply('An error occurred while processing your request.');
+            } catch (replyError) {
+                console.error('Failed to edit reply:', replyError.message);
+            }
         }
     }
 });
+
+
+
+
+
+
+
 
 // Login to Discord
 client.login(process.env.TOKEN);
@@ -203,6 +231,24 @@ const commands = [
     {
         name: 'patchnotes',
         description: 'Fetch the latest Star Citizen patch notes',
+    },
+    {
+        name: 'setup',
+        description: 'Set up the bot to post patch notes in a specific channel and optionally set a ping role',
+        options: [
+            {
+                name: 'channel',
+                type: 7, // Channel type
+                description: 'The channel where the bot should post patch notes',
+                required: true,
+            },
+            {
+                name: 'pingrole',
+                type: 8, // Role type
+                description: 'The role to ping when new patch notes are posted (optional)',
+                required: false,
+            },
+        ],
     },
 ];
 
@@ -226,6 +272,6 @@ const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
 // Start polling for updates
 client.once('ready', async () => {
     console.log('Bot is ready!');
-    latestThreadUrl = await getLatestThreadUrl(); // Initialize the latest thread URL
+    latestThreadUrl = await getLatestThreadUrl();
     setInterval(checkForUpdates, 60000); // Check for updates every 60 seconds
 });
