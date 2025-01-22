@@ -64,7 +64,17 @@ async function getLatestThreadUrl() {
     try {
         console.log('Launching browser to check for updates...');
         browser = await puppeteer.launch({
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+            headless: 'new',
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process'
+            ],
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null
         });
         const page = await browser.newPage();
 
@@ -121,7 +131,17 @@ async function getLatestPatchNotesContent(url, sourceId = null, isDM = false) {
     try {
         console.log('Launching browser to fetch patch notes...');
         browser = await puppeteer.launch({
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+            headless: 'new',
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process'
+            ],
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null
         });
         const page = await browser.newPage();
 
