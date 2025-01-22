@@ -13,7 +13,7 @@ const OpenAI = require('openai');
 let openai = null;
 
 // Persistent configuration file
-const CONFIG_FILE = '/app/data/config.json'; // production
+const CONFIG_FILE = '/app/data/config.json'; // production DONT DELETE
 //const CONFIG_FILE = 'config.json'; // Testing
 let serverConfigs = {};
 
@@ -51,8 +51,9 @@ function resetServerConfig(guildId) {
 // Forum URL to monitor
 const FORUM_URL = 'https://robertsspaceindustries.com/spectrum/community/SC/forum/190048';
 
-// Variable to store the latest thread URL
+// Global state for forum monitoring
 let latestThreadUrl = null;
+let lastPatchNotesData = null; // Cache the latest patch notes
 
 // Function to fetch the latest thread URL
 async function getLatestThreadUrl() {
@@ -171,68 +172,94 @@ async function getLatestPatchNotesContent(url) {
 async function checkForUpdates() {
     console.log('Checking for updates...');
     if (Object.keys(serverConfigs).length === 0) {
-        console.error('No servers configured. Please run /setup to configure the bot.');
+        console.log('No servers configured. Skipping update check.');
         return;
     }
 
-    const latestUrl = await getLatestThreadUrl();
+    try {
+        const latestUrl = await getLatestThreadUrl();
 
-    if (latestUrl && latestUrl !== latestThreadUrl) {
-        console.log('New thread detected! Fetching patch notes...');
-        latestThreadUrl = latestUrl;
+        if (latestUrl && latestUrl !== latestThreadUrl) {
+            console.log('New thread detected! Fetching patch notes...');
+            latestThreadUrl = latestUrl;
 
-        const patchNotesData = await getLatestPatchNotesContent(latestUrl);
-        if (patchNotesData) {
-            const { url, content } = patchNotesData;
-
-            if (!content) {
-                console.error('Patch notes content is empty or null. Skipping posting.');
-                return;
-            }
-
-            // Send to all configured servers
-            for (const [guildId, config] of Object.entries(serverConfigs)) {
-                try {
-                    const channel = await client.channels.fetch(config.channelId).catch(() => null);
-                    if (channel) {
-                        const roleMention = config.pingRoleId ? `<@&${config.pingRoleId}>` : '';
-                        await channel.send(`${roleMention} **New Patch Has Just Dropped! **\n${url}`);
-
-                        const parts = content.match(/.{1,2000}/gs) || [];
-let isFirstMessage = true; // Track whether this is the first message
-
-for (const part of parts) {
-    if (isFirstMessage) {
-        // Send the first message with the ping
-        await channel.send({
-            content: `${roleMention} **New Patch Has Just Dropped! **\n${part}`
-        });
-        isFirstMessage = false; // Mark subsequent messages as non-first
-    } else {
-        // Send subsequent messages with suppressed notifications
-        await channel.send({
-            content: part,
-            flags: MessageFlags.SuppressNotifications
-        });
-    }
-}
-
-
-                        console.log(`Patch notes posted in server ${guildId}`);
-                    }
-                } catch (error) {
-                    console.error(`Error posting to server ${guildId}:`, error);
-                }
+            const patchNotesData = await getLatestPatchNotesContent(latestUrl);
+            if (patchNotesData && patchNotesData.content) {
+                lastPatchNotesData = patchNotesData; // Cache the patch notes
+                await distributeUpdatesToServers(patchNotesData);
             }
         }
+    } catch (error) {
+        console.error('Error in checkForUpdates:', error);
     }
 }
 
-// Command handling
+// New function to handle distributing updates to all configured servers
+async function distributeUpdatesToServers(patchNotesData) {
+    const { url, content } = patchNotesData;
+    const parts = content.match(/.{1,2000}/gs) || [];
+
+    // Process servers in batches to avoid rate limits
+    const batchSize = 10;
+    const serverEntries = Object.entries(serverConfigs);
+    
+    for (let i = 0; i < serverEntries.length; i += batchSize) {
+        const batch = serverEntries.slice(i, i + batchSize);
+        
+        await Promise.allSettled(batch.map(async ([guildId, config]) => {
+            try {
+                const channel = await client.channels.fetch(config.channelId);
+                if (!channel) {
+                    console.log(`Channel not found for server ${guildId}. Skipping.`);
+                    return;
+                }
+
+                const roleMention = config.pingRoleId ? `<@&${config.pingRoleId}>` : '';
+                
+                // Send initial message with ping
+                await channel.send(`${roleMention} **New Patch Has Just Dropped!**\n${url}`);
+
+                // Send content in parts with rate limiting
+                for (const [index, part] of parts.entries()) {
+                    await channel.send({
+                        content: part,
+                        flags: index > 0 ? MessageFlags.SuppressNotifications : 0
+                    });
+                    await new Promise(resolve => setTimeout(resolve, 500)); // Add delay between messages
+                }
+
+                console.log(`Successfully posted update to server ${guildId}`);
+            } catch (error) {
+                console.error(`Failed to post update to server ${guildId}:`, error);
+            }
+        }));
+
+        // Add delay between batches to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+}
+
+// Modify the permission check function
+async function checkAdminPermission(interaction) {
+    if (!interaction.member.permissions.has('Administrator')) {
+        await interaction.reply({
+            content: 'This command is only available to server administrators.',
+            ephemeral: true
+        });
+        return false;
+    }
+    return true;
+}
+
+// Then modify the command handling to properly await the check
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isCommand() && !interaction.isButton()) return;
 
     if (interaction.isCommand()) {
+        // Check admin permissions for all commands
+        const hasPermission = await checkAdminPermission(interaction);
+        if (!hasPermission) return;
+
         if (interaction.commandName === 'setup') {
             try {
                 await interaction.deferReply({ ephemeral: true });
@@ -284,7 +311,6 @@ client.on('interactionCreate', async (interaction) => {
             }
         } else if (interaction.commandName === 'patchnotes') {
             const serverConfig = serverConfigs[interaction.guildId];
-            console.log('Server configuration for patchnotes command:', serverConfig); // Debugging statement
             if (!serverConfig) {
                 await interaction.reply({
                     content: 'This server is not configured. Please run `/setup` first.',
@@ -296,42 +322,33 @@ client.on('interactionCreate', async (interaction) => {
             try {
                 await interaction.deferReply();
 
-                const patchNotesData = await getLatestPatchNotesContent(latestThreadUrl);
+                // Use cached patch notes if available, otherwise fetch new ones
+                const patchNotesData = lastPatchNotesData || await getLatestPatchNotesContent(latestThreadUrl);
                 if (patchNotesData) {
                     const { url, content } = patchNotesData;
-
-                    const channel = await client.channels.fetch(serverConfig.channelId).catch((err) => {
-                        console.error('Error fetching channel:', err.message);
-                        return null;
-                    });
-
+                    const channel = await client.channels.fetch(serverConfig.channelId);
+                    
                     if (!channel) {
-                        console.error('Command invoked in an invalid or undefined channel.');
-                        await interaction.editReply('An error occurred: the channel could not be determined.');
+                        await interaction.editReply('Error: Could not find the configured channel.');
                         return;
                     }
 
                     const roleMention = serverConfig.pingRoleId ? `<@&${serverConfig.pingRoleId}>` : '';
-                    await channel.send(`${roleMention} **Latest Star Citizen Patch Notes:**
-${url}`);
+                    await channel.send(`${roleMention} **Latest Star Citizen Patch Notes:**\n${url}`);
 
                     const parts = content.match(/.{1,2000}/gs) || [];
                     for (const part of parts) {
                         await channel.send(part);
+                        await new Promise(resolve => setTimeout(resolve, 500)); // Rate limiting
                     }
 
                     await interaction.editReply('Patch notes have been posted.');
-
                 } else {
                     await interaction.editReply('Could not fetch the latest patch notes. Please try again later.');
                 }
             } catch (error) {
-                console.error('Error handling /patchnotes command:', error.message);
-                try {
-                    await interaction.editReply('An unexpected error occurred while processing your request.');
-                } catch (replyError) {
-                    console.error('Failed to edit reply:', replyError.message);
-                }
+                console.error('Error handling /patchnotes command:', error);
+                await interaction.editReply('An error occurred while processing your request.');
             }
         } else if (interaction.commandName === 'reset') {
             try {
@@ -397,16 +414,22 @@ ${url}`);
                 }
 
                 const channel = await client.channels.fetch(serverConfig.channelId).catch(() => null);
-                const channelName = channel ? `#${channel.name}` : 'Unknown';
+                const channelName = channel ? `#${channel.name}` : null;
                 const openAiKeyStatus = serverConfig.openAiKey ? 'True' : 'False';
                 const pingRole = serverConfig.pingRoleId ? `<@&${serverConfig.pingRoleId}>` : 'None';
+
+                let connectionStatus = 'Server Not Connected, run `/setup`';
+                if (channelName && openAiKeyStatus === 'True') {
+                    connectionStatus = 'Server Connected';
+                }
 
                 await interaction.reply({
                     content: `
                     **Server Configuration:**
-                    • **Channel:** ${channelName}
+                    • **Channel:** ${channelName || 'Unknown'}
                     • **OpenAI Key Saved:** ${openAiKeyStatus}
                     • **Ping Role:** ${pingRole}
+                    • **Status:** ${connectionStatus}
                     `,
                     ephemeral: true
                 });
@@ -418,8 +441,42 @@ ${url}`);
                     console.error('Failed to reply:', replyError.message);
                 }
             }
+        } else if (interaction.commandName === 'test') {
+            try {
+                await interaction.deferReply({ ephemeral: true });
+
+                // Get the latest thread URL and patch notes
+                const testUrl = await getLatestThreadUrl();
+                if (!testUrl) {
+                    await interaction.editReply('Could not fetch the latest forum thread. Test failed.');
+                    return;
+                }
+
+                const patchNotesData = await getLatestPatchNotesContent(testUrl);
+                if (!patchNotesData || !patchNotesData.content) {
+                    await interaction.editReply('Could not fetch patch notes content. Test failed.');
+                    return;
+                }
+
+                // Store the data in cache
+                lastPatchNotesData = patchNotesData;
+                
+                // Distribute to all servers
+                await distributeUpdatesToServers(patchNotesData);
+                await interaction.editReply('Test successful: Latest patch notes have been distributed to all configured servers.');
+                
+                // Log the test event
+                console.log(`Test distribution initiated by admin in server ${interaction.guildId}`);
+            } catch (error) {
+                console.error('Error handling /test command:', error);
+                await interaction.editReply('An error occurred while testing the distribution system.');
+            }
         }
     } else if (interaction.isButton()) {
+        // Check admin permissions for buttons
+        const hasPermission = await checkAdminPermission(interaction);
+        if (!hasPermission) return;
+
         if (interaction.customId === 'setup') {
             await interaction.reply('Please use the `/setup` command to set up the bot. Requires OpenAI API Key - https://platform.openai.com/account/api-keys', { ephemeral: true });
         } else if (interaction.customId === 'patchnotes') {
@@ -477,9 +534,19 @@ const commands = [
         name: 'check',
         description: 'Check if the server is already set up and provide configuration details',
     },
+    {
+        name: 'test',
+        description: 'Test the patch notes distribution system (Admin only)',
+        options: [
+            {
+                name: 'message',
+                type: 3, // String type
+                description: 'Custom test message (optional)',
+                required: false,
+            }
+        ],
+    }
 ];
-
-
 
 const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
 
@@ -501,7 +568,18 @@ const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
 // Start polling for updates
 client.once('ready', async () => {
     console.log('Bot is ready!');
-    loadConfig(); // Add this line to load configurations on startup
-    latestThreadUrl = await getLatestThreadUrl();
-    setInterval(checkForUpdates, 60000); // Check for updates every 60 seconds
+    loadConfig();
+    
+    // Initial setup
+    try {
+        latestThreadUrl = await getLatestThreadUrl();
+        if (latestThreadUrl) {
+            lastPatchNotesData = await getLatestPatchNotesContent(latestThreadUrl);
+        }
+    } catch (error) {
+        console.error('Error during initial setup:', error);
+    }
+
+    // Check for updates every 2 minutes
+    setInterval(checkForUpdates, 120000);
 });
