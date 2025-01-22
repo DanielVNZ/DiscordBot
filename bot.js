@@ -8,12 +8,12 @@ const cheerio = require('cheerio');
 // Discord bot setup
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// OpenAI setup
+// OpenAI setup - use key from .env
 const OpenAI = require('openai');
-let openai = null;
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // Persistent configuration file
-const CONFIG_FILE = '/app/data/config1.json'; // production DONT DELETE
+const CONFIG_FILE = '/app/data/config2.json'; // production DONT DELETE
 //const CONFIG_FILE = 'config.json'; // Testing
 let serverConfigs = {};
 let dmUserConfigs = {};
@@ -26,12 +26,6 @@ function loadConfig() {
         dmUserConfigs = data.dmUsers || {};
         console.log('Loaded server configurations:', serverConfigs);
         console.log('Loaded DM user configurations:', dmUserConfigs);
-        
-        // Initialize OpenAI with the first available API key
-        const firstConfig = Object.values(serverConfigs)[0] || Object.values(dmUserConfigs)[0];
-        if (firstConfig && firstConfig.openAiKey) {
-            openai = new OpenAI({ apiKey: firstConfig.openAiKey });
-        }
         console.log('Configuration loaded.');
     } else {
         console.log('No configuration found. Please run /setup to configure the bot.');
@@ -101,11 +95,6 @@ async function getLatestThreadUrl() {
 
 // Function to process patch notes with ChatGPT
 async function processPatchNotesWithChatGPT(content) {
-    if (!openai) {
-        console.error('OpenAI API key is not set. Please run /setup to configure it.');
-        return null;
-    }
-
     try {
         const prompt = `You are a helpful assistant that formats patch notes for Star Citizen. Don't include a release date/time! Besides this, YOU MUST INCLUDE EVERYTHING FROM THE TITLE AT THE TOP TO THE END OF THE TECHNICAL CATEGORY! Make sure to show any special requests or any testing/feedback focus. Include all Known issues, Features & Gameplay, Bug Fixes, and Technical. Use markdown for formatting:\n\n${content}`;
 
@@ -126,7 +115,7 @@ async function processPatchNotesWithChatGPT(content) {
 }
 
 // Function to fetch and format patch notes
-async function getLatestPatchNotesContent(url) {
+async function getLatestPatchNotesContent(url, sourceId = null, isDM = false) {
     let browser;
 
     try {
@@ -191,7 +180,7 @@ async function checkForUpdates() {
             console.log('New thread detected! Fetching patch notes...');
             latestThreadUrl = latestUrl;
 
-            const patchNotesData = await getLatestPatchNotesContent(latestUrl);
+            const patchNotesData = await getLatestPatchNotesContent(latestUrl, null, false);
             if (patchNotesData && patchNotesData.content) {
                 lastPatchNotesData = patchNotesData; // Cache the patch notes
                 await distributeUpdatesToServers(patchNotesData);
@@ -305,52 +294,28 @@ client.on('interactionCreate', async (interaction) => {
 
                 // Different handling for DMs vs Server setup
                 if (!interaction.guild) {
-                    const openAiKey = interaction.options.getString('openai_key');
-                    if (!openAiKey) {
-                        await interaction.editReply('An OpenAI API key is required. You can get an API key from https://platform.openai.com/account/api-keys');
-                        return;
-                    }
-
                     // Save DM user configuration
                     dmUserConfigs[interaction.user.id] = {
-                        openAiKey: openAiKey
+                        enabled: true // Just track that they're enabled for DMs
                     };
                     
                     saveConfig();
-
-                    // Initialize OpenAI if not already initialized
-                    if (!openai) {
-                        openai = new OpenAI({ apiKey: openAiKey });
-                    }
                     
-                    await interaction.editReply('OpenAI key has been set up for DM use. You will now receive patch notes automatically in DMs when they are released.');
+                    await interaction.editReply('Setup complete! You will now receive patch notes automatically in DMs when they are released.');
                     return;
                 }
 
-                // Server setup code continues as normal...
+                // Server setup code
                 const channel = interaction.options.getChannel('channel');
                 const pingRole = interaction.options.getRole('pingrole');
-                const openAiKey = interaction.options.getString('openai_key');
-
-                if (!openAiKey) {
-                    await interaction.editReply('An OpenAI API key is required to set up the bot. Please provide one. You can get an API key from https://platform.openai.com/account/api-keys');
-                    console.error('OpenAI API key not provided during setup.');
-                    return;
-                }
 
                 // Save server-specific configuration
                 serverConfigs[interaction.guildId] = {
                     channelId: channel.id,
-                    pingRoleId: pingRole ? pingRole.id : null,
-                    openAiKey: openAiKey
+                    pingRoleId: pingRole ? pingRole.id : null
                 };
                 
                 saveConfig();
-
-                // Initialize OpenAI if not already initialized
-                if (!openai) {
-                    openai = new OpenAI({ apiKey: openAiKey });
-                }
 
                 await interaction.editReply({
                     content: `Patch notes will now be posted in <#${channel.id}>${
@@ -500,11 +465,10 @@ client.on('interactionCreate', async (interaction) => {
 
                 const channel = await client.channels.fetch(serverConfig.channelId).catch(() => null);
                 const channelName = channel ? `#${channel.name}` : null;
-                const openAiKeyStatus = serverConfig.openAiKey ? 'True' : 'False';
                 const pingRole = serverConfig.pingRoleId ? `<@&${serverConfig.pingRoleId}>` : 'None';
 
                 let connectionStatus = 'Server Not Connected, run `/setup`';
-                if (channelName && openAiKeyStatus === 'True') {
+                if (channelName) {
                     connectionStatus = 'Server Connected';
                 }
 
@@ -512,7 +476,6 @@ client.on('interactionCreate', async (interaction) => {
                     content: `
                     **Server Configuration:**
                     • **Channel:** ${channelName || 'Unknown'}
-                    • **OpenAI Key Saved:** ${openAiKeyStatus}
                     • **Ping Role:** ${pingRole}
                     • **Status:** ${connectionStatus}
                     `,
@@ -520,11 +483,7 @@ client.on('interactionCreate', async (interaction) => {
                 });
             } catch (error) {
                 console.error('Error handling /check command:', error.message);
-                try {
-                    await interaction.reply('An error occurred while processing your request.');
-                } catch (replyError) {
-                    console.error('Failed to reply:', replyError.message);
-                }
+                await interaction.reply('An error occurred while processing your request.');
             }
         } else if (interaction.commandName === 'test') {
             try {
@@ -617,14 +576,8 @@ const commands = [
     },
     {
         name: 'setup',
-        description: 'Set up the bot to post patch notes and configure OpenAI',
+        description: 'Set up the bot to post patch notes',
         options: [
-            {
-                name: 'openai_key',
-                type: 3, // String type
-                description: 'Your OpenAI API key (required) - https://platform.openai.com/account/api-keys',
-                required: true,
-            },
             {
                 name: 'channel',
                 type: 7, // Channel type
