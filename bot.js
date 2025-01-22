@@ -13,17 +13,22 @@ const OpenAI = require('openai');
 let openai = null;
 
 // Persistent configuration file
-const CONFIG_FILE = '/app/data/config.json'; // production DONT DELETE
+const CONFIG_FILE = '/app/data/config1.json'; // production DONT DELETE
 //const CONFIG_FILE = 'config.json'; // Testing
 let serverConfigs = {};
+let dmUserConfigs = {};
 
 // Load configuration from file
 function loadConfig() {
     if (fs.existsSync(CONFIG_FILE)) {
-        serverConfigs = JSON.parse(fs.readFileSync(CONFIG_FILE));
-        console.log('Loaded server configurations:', serverConfigs); // Debugging statement
+        const data = JSON.parse(fs.readFileSync(CONFIG_FILE));
+        serverConfigs = data.servers || {};
+        dmUserConfigs = data.dmUsers || {};
+        console.log('Loaded server configurations:', serverConfigs);
+        console.log('Loaded DM user configurations:', dmUserConfigs);
+        
         // Initialize OpenAI with the first available API key
-        const firstConfig = Object.values(serverConfigs)[0];
+        const firstConfig = Object.values(serverConfigs)[0] || Object.values(dmUserConfigs)[0];
         if (firstConfig && firstConfig.openAiKey) {
             openai = new OpenAI({ apiKey: firstConfig.openAiKey });
         }
@@ -35,7 +40,10 @@ function loadConfig() {
 
 // Save configuration to file
 function saveConfig() {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(serverConfigs, null, 4));
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({
+        servers: serverConfigs,
+        dmUsers: dmUserConfigs
+    }, null, 4));
     console.log('Configuration saved.');
 }
 
@@ -199,7 +207,7 @@ async function distributeUpdatesToServers(patchNotesData) {
     const { url, content } = patchNotesData;
     const parts = content.match(/.{1,2000}/gs) || [];
 
-    // Process servers in batches to avoid rate limits
+    // First handle server distributions
     const batchSize = 10;
     const serverEntries = Object.entries(serverConfigs);
     
@@ -215,17 +223,14 @@ async function distributeUpdatesToServers(patchNotesData) {
                 }
 
                 const roleMention = config.pingRoleId ? `<@&${config.pingRoleId}>` : '';
-                
-                // Send initial message with ping
                 await channel.send(`${roleMention} **New Patch Has Just Dropped!**\n${url}`);
 
-                // Send content in parts with rate limiting
                 for (const [index, part] of parts.entries()) {
                     await channel.send({
                         content: part,
                         flags: index > 0 ? MessageFlags.SuppressNotifications : 0
                     });
-                    await new Promise(resolve => setTimeout(resolve, 500)); // Add delay between messages
+                    await new Promise(resolve => setTimeout(resolve, 500));
                 }
 
                 console.log(`Successfully posted update to server ${guildId}`);
@@ -234,14 +239,48 @@ async function distributeUpdatesToServers(patchNotesData) {
             }
         }));
 
-        // Add delay between batches to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    // Then handle DM distributions
+    const dmUserEntries = Object.entries(dmUserConfigs);
+    for (let i = 0; i < dmUserEntries.length; i += batchSize) {
+        const batch = dmUserEntries.slice(i, i + batchSize);
+        
+        await Promise.allSettled(batch.map(async ([userId, config]) => {
+            try {
+                const user = await client.users.fetch(userId);
+                if (!user) {
+                    console.log(`User ${userId} not found. Skipping.`);
+                    return;
+                }
+
+                await user.send(`**New Star Citizen Patch Notes!**\n${url}`);
+
+                for (const part of parts) {
+                    await user.send(part);
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+
+                console.log(`Successfully sent update to user ${userId}`);
+            } catch (error) {
+                console.error(`Failed to send update to user ${userId}:`, error);
+            }
+        }));
+
         await new Promise(resolve => setTimeout(resolve, 2000));
     }
 }
 
-// Modify the permission check function
+// Modify the permission check function to handle DMs
 async function checkAdminPermission(interaction) {
-    if (!interaction.member.permissions.has('Administrator')) {
+    // Allow DM interactions
+    if (!interaction.guild) {
+        return true;
+    }
+
+    // Check server permissions
+    if (!interaction.member?.permissions.has('Administrator')) {
         await interaction.reply({
             content: 'This command is only available to server administrators.',
             ephemeral: true
@@ -264,13 +303,38 @@ client.on('interactionCreate', async (interaction) => {
             try {
                 await interaction.deferReply({ ephemeral: true });
 
+                // Different handling for DMs vs Server setup
+                if (!interaction.guild) {
+                    const openAiKey = interaction.options.getString('openai_key');
+                    if (!openAiKey) {
+                        await interaction.editReply('An OpenAI API key is required. You can get an API key from https://platform.openai.com/account/api-keys');
+                        return;
+                    }
+
+                    // Save DM user configuration
+                    dmUserConfigs[interaction.user.id] = {
+                        openAiKey: openAiKey
+                    };
+                    
+                    saveConfig();
+
+                    // Initialize OpenAI if not already initialized
+                    if (!openai) {
+                        openai = new OpenAI({ apiKey: openAiKey });
+                    }
+                    
+                    await interaction.editReply('OpenAI key has been set up for DM use. You will now receive patch notes automatically in DMs when they are released.');
+                    return;
+                }
+
+                // Server setup code continues as normal...
                 const channel = interaction.options.getChannel('channel');
                 const pingRole = interaction.options.getRole('pingrole');
                 const openAiKey = interaction.options.getString('openai_key');
 
                 if (!openAiKey) {
-                    await interaction.editReply('An OpenAI API key is required to set up the bot. Please provide one. You can get an API key from https://platform.openai.com/account/api-keys', { ephemeral: true });
-                    console.error('OpenAi API key not provided during setup.');
+                    await interaction.editReply('An OpenAI API key is required to set up the bot. Please provide one. You can get an API key from https://platform.openai.com/account/api-keys');
+                    console.error('OpenAI API key not provided during setup.');
                     return;
                 }
 
@@ -294,38 +358,59 @@ client.on('interactionCreate', async (interaction) => {
                     }.`
                 });
 
-                console.log(
-                    `Setup complete: Channel ID = ${channel.id}, Ping Role ID = ${
-                        pingRole ? pingRole.id : 'None'
-                    }, OpenAI Key Provided: ${!!openAiKey}`
-                );
+                console.log(`Setup complete for server ${interaction.guildId}`);
             } catch (error) {
                 console.error('Error handling /setup command:', error.message);
-
-                // Attempt to reply with an error message if the interaction isn't replied to
-                try {
-                    await interaction.editReply('An error occurred while processing your request.');
-                } catch (replyError) {
-                    console.error('Failed to edit reply:', replyError.message);
-                }
+                await interaction.editReply('An error occurred while processing your request.');
             }
         } else if (interaction.commandName === 'patchnotes') {
-            const serverConfig = serverConfigs[interaction.guildId];
-            if (!serverConfig) {
-                await interaction.reply({
-                    content: 'This server is not configured. Please run `/setup` first.',
-                    ephemeral: true
-                });
-                return;
-            }
-
             try {
                 await interaction.deferReply();
 
-                // Use cached patch notes if available, otherwise fetch new ones
-                const patchNotesData = lastPatchNotesData || await getLatestPatchNotesContent(latestThreadUrl);
-                if (patchNotesData) {
-                    const { url, content } = patchNotesData;
+                // If in DMs, check if user is configured first
+                if (!interaction.guild) {
+                    const userConfig = dmUserConfigs[interaction.user.id];
+                    if (!userConfig) {
+                        await interaction.editReply({
+                            content: 'You have not set up the bot for DMs. Please run `/setup` first to receive patch notes.',
+                            ephemeral: true
+                        });
+                        return;
+                    }
+
+                    // Use cached patch notes only
+                    if (lastPatchNotesData) {
+                        const { url, content } = lastPatchNotesData;
+                        
+                        await interaction.editReply(`**Latest Star Citizen Patch Notes:**\n${url}`);
+
+                        const parts = content.match(/.{1,2000}/gs) || [];
+                        for (const part of parts) {
+                            await interaction.followUp({
+                                content: part,
+                                ephemeral: true
+                            });
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                        }
+                    } else {
+                        await interaction.editReply('No patch notes are currently cached. Please try again in a moment.');
+                    }
+                    return;
+                }
+
+                // If in a server, check for server config
+                const serverConfig = serverConfigs[interaction.guildId];
+                if (!serverConfig) {
+                    await interaction.editReply({
+                        content: 'This server is not configured. Please ask a server administrator to run `/setup` first.',
+                        ephemeral: true
+                    });
+                    return;
+                }
+
+                // Use cached patch notes only
+                if (lastPatchNotesData) {
+                    const { url, content } = lastPatchNotesData;
                     const channel = await client.channels.fetch(serverConfig.channelId);
                     
                     if (!channel) {
@@ -339,12 +424,12 @@ client.on('interactionCreate', async (interaction) => {
                     const parts = content.match(/.{1,2000}/gs) || [];
                     for (const part of parts) {
                         await channel.send(part);
-                        await new Promise(resolve => setTimeout(resolve, 500)); // Rate limiting
+                        await new Promise(resolve => setTimeout(resolve, 500));
                     }
 
                     await interaction.editReply('Patch notes have been posted.');
                 } else {
-                    await interaction.editReply('Could not fetch the latest patch notes. Please try again later.');
+                    await interaction.editReply('No patch notes are currently cached. Please try again in a moment.');
                 }
             } catch (error) {
                 console.error('Error handling /patchnotes command:', error);
@@ -471,6 +556,38 @@ client.on('interactionCreate', async (interaction) => {
                 console.error('Error handling /test command:', error);
                 await interaction.editReply('An error occurred while testing the distribution system.');
             }
+        } else if (interaction.commandName === 'forceupdate') {
+            try {
+                await interaction.deferReply({ ephemeral: true });
+
+                const oldUrl = latestThreadUrl;
+                latestThreadUrl = await getLatestThreadUrl();
+                
+                if (!latestThreadUrl) {
+                    await interaction.editReply('Failed to fetch the forum page. Please try again later.');
+                    return;
+                }
+
+                if (latestThreadUrl === oldUrl) {
+                    await interaction.editReply('No new patch notes found. Cache is up to date.');
+                    return;
+                }
+
+                const patchNotesData = await getLatestPatchNotesContent(latestThreadUrl);
+                if (!patchNotesData || !patchNotesData.content) {
+                    await interaction.editReply('Failed to fetch patch notes content.');
+                    return;
+                }
+
+                // Update cache
+                lastPatchNotesData = patchNotesData;
+                await interaction.editReply('Successfully updated patch notes cache. Use `/patchnotes` to view the latest notes.');
+                
+                console.log(`Force update initiated by admin in ${interaction.guild ? `server ${interaction.guildId}` : 'DMs'}`);
+            } catch (error) {
+                console.error('Error handling /forceupdate command:', error);
+                await interaction.editReply('An error occurred while forcing the update.');
+            }
         }
     } else if (interaction.isButton()) {
         // Check admin permissions for buttons
@@ -500,14 +617,8 @@ const commands = [
     },
     {
         name: 'setup',
-        description: 'Set up the bot to post patch notes and configure OpenAI and add an optional role to ping',
+        description: 'Set up the bot to post patch notes and configure OpenAI',
         options: [
-            {
-                name: 'channel',
-                type: 7, // Channel type
-                description: 'The channel where the bot should post patch notes',
-                required: true,
-            },
             {
                 name: 'openai_key',
                 type: 3, // String type
@@ -515,11 +626,17 @@ const commands = [
                 required: true,
             },
             {
+                name: 'channel',
+                type: 7, // Channel type
+                description: 'The channel where the bot should post patch notes',
+                required: true,
+            },
+            {
                 name: 'pingrole',
                 type: 8, // Role type
                 description: 'The role to ping when new patch notes are posted (optional)',
                 required: false,
-            },
+            }
         ],
     },
     {
@@ -545,6 +662,10 @@ const commands = [
                 required: false,
             }
         ],
+    },
+    {
+        name: 'forceupdate',
+        description: 'Force check for new patch notes and update cache (Admin only)',
     }
 ];
 
